@@ -1,0 +1,25 @@
+# Build the checked-out fork, never the official npm package.
+FROM oven/bun:1.3.9 AS build
+WORKDIR /app
+COPY package.json bun.lock bunfig.toml ./
+COPY ui/package.json ui/bun.lock ./ui/
+RUN bun install --frozen-lockfile --ignore-scripts && cd ui && bun install --frozen-lockfile --ignore-scripts
+COPY . .
+RUN bun run build:all
+RUN bun install --frozen-lockfile --production --ignore-scripts
+
+FROM node:24.14.1-bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends supervisor ca-certificates && rm -rf /var/lib/apt/lists/*
+WORKDIR /opt/ccs
+COPY --from=build /app/package.json ./
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/lib ./lib
+COPY --from=build /app/config ./config
+COPY --from=build /app/scripts ./scripts
+COPY docker/supervisord.conf /etc/supervisord.conf
+COPY docker/entrypoint-integrated.sh /entrypoint-integrated.sh
+RUN chmod +x /entrypoint-integrated.sh /opt/ccs/dist/ccs.js && mkdir -p /var/log/ccs && ln -s /opt/ccs/dist/ccs.js /usr/local/bin/ccs && ln -s /opt/ccs/dist/docker/docker-bootstrap.js /usr/local/bin/ccs-docker-bootstrap
+ENV CCS_CLIPROXY_NO_PLUGIN_ASSET=1
+EXPOSE 3000 8317
+ENTRYPOINT ["/entrypoint-integrated.sh"]

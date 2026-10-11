@@ -218,7 +218,8 @@ function normalizeRestriction(
  * keyed by window name (`five_hour`, `seven_day`, `seven_day_sonnet`, ...).
  */
 function isClaudeOAuthUsageWindowCandidate(key: string, raw: Record<string, unknown>): boolean {
-  if (key === 'extra_usage') return false;
+  // Internal codenames can look like quotas but have no published meaning.
+  if (key !== 'five_hour' && !WEEKLY_RATE_LIMIT_TYPES.has(key)) return false;
   if (asNumber(raw['utilization']) === null) return false;
 
   const resetAt = raw['resetsAt'] ?? raw['resets_at'] ?? raw['resetAt'] ?? raw['reset_at'] ?? null;
@@ -246,13 +247,45 @@ export function buildClaudeQuotaWindows(payload: Record<string, unknown>): Claud
       if (window) windows.push(window);
     }
   } else if (toObject(payload)) {
+    // The named limits array carries model scopes omitted from legacy fields.
+    for (const item of Array.isArray(payload['limits']) ? payload['limits'] : []) {
+      const raw = toObject(item);
+      if (!raw) continue;
+      const kind = asString(raw['kind']);
+      const percent = asNumber(raw['percent']);
+      const resetAt = normalizeTimestamp(raw['resets_at']);
+      if (!kind || percent === null || percent < 0 || !resetAt) continue;
+      const scope = toObject(raw['scope']);
+      const model = toObject(scope?.['model']);
+      const modelName = asString(model?.['display_name']);
+      const suffix = asString(model?.['id']) ?? modelName;
+      const rateLimitType =
+        kind === 'session'
+          ? 'five_hour'
+          : kind === 'weekly_all'
+            ? 'seven_day'
+            : kind.startsWith('weekly_')
+              ? `seven_day_${kind.slice(7)}${suffix ? `_${suffix}` : ''}`
+              : null;
+      if (!rateLimitType) continue;
+      const window = normalizeRestriction(
+        { ...raw, rateLimitType, utilization: percent },
+        undefined,
+        'percent'
+      );
+      if (window) {
+        if (modelName) window.label = modelName;
+        windows.push(window);
+      }
+    }
     for (const [key, value] of Object.entries(payload)) {
       const raw = toObject(value);
       if (!raw) continue;
       if (!isClaudeOAuthUsageWindowCandidate(key, raw)) continue;
       // OAuth /oauth/usage payloads return utilization as percent 0..100.
       const window = normalizeRestriction(raw, key, 'percent');
-      if (window) windows.push(window);
+      if (window && !windows.some((entry) => entry.rateLimitType === window.rateLimitType))
+        windows.push(window);
     }
 
     // Some responses may contain a single restriction object directly,
@@ -316,7 +349,7 @@ const WEEKLY_RATE_LIMIT_TYPES = new Set([
 ]);
 
 export function isClaudeWeeklyRateLimitType(rateLimitType: string): boolean {
-  return WEEKLY_RATE_LIMIT_TYPES.has(rateLimitType);
+  return WEEKLY_RATE_LIMIT_TYPES.has(rateLimitType) || rateLimitType.startsWith('seven_day_scoped');
 }
 
 export function pickMostRestrictiveClaudeWeeklyWindow(
