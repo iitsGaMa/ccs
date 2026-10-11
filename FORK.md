@@ -43,3 +43,12 @@ puis déployer. Garder l'ancienne image pour le retour arrière. Ne pas exécute
 Aucun compte, cookie, jeton ou fichier de configuration réel ne doit entrer dans Git.
 Les workflows de publication upstream restent désactivés dans les réglages du fork ;
 seul **Homelab build** est activé. La CI lit des fixtures, jamais les comptes du homelab.
+
+## Historique du proxy
+
+`GET /api/bar/account-history` utilise l'authentification existante du dashboard.
+La réponse expose uniquement les totaux quotidiens UTC sur 30 jours, par compte
+attribué par CLIProxy : tokens entrée/sortie/cache, requêtes et estimation API.
+Les requêtes échouées et sans attribution sont exclues. Les dates du premier et
+du dernier enregistrement indiquent la couverture. Ce n'est pas la facturation
+d'un abonnement ni un historique complet des usages directs chez Claude.

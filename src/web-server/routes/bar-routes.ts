@@ -1,3 +1,4 @@
+import { accountHistory } from '../usage/account-history';
 /**
  * Bar Routes — /api/bar/summary aggregator
  *
@@ -631,6 +632,19 @@ export function createBarRouter(deps: BarRouterDeps): Router {
         err: { name: e.name, message: e.message },
       });
       res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+
+  router.get('/account-history', async (_req: Request, res: Response): Promise<void> => {
+    try {
+      const details = await withTimeout(deps.loadCliproxyDetails(), SIDELOAD_TIMEOUT_MS);
+      if (!details) {
+        res.status(503).json({ error: 'History unavailable' });
+        return;
+      }
+      res.json(accountHistory(details));
+    } catch {
+      res.status(503).json({ error: 'History unavailable' });
     }
   });
 
