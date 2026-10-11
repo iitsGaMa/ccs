@@ -338,6 +338,7 @@ async function runClaudeUsageFetch(
         windows,
         coreUsage,
         credits: claudeCredits(payload as Record<string, unknown>),
+        plan: await fetchClaudePlan(accessToken, accountId),
         lastUpdated: Date.now(),
         accountId,
       };
@@ -431,4 +432,34 @@ export async function fetchAllClaudeQuotas(
     }))
   );
   return results;
+}
+
+const profileCache = new Map<
+  string,
+  { expires: number; value?: { organizationType?: string; rateLimitTier?: string } }
+>();
+async function fetchClaudePlan(accessToken: string, accountId: string) {
+  const held = profileCache.get(accountId);
+  if (held && held.expires > Date.now()) return held.value;
+  let value: { organizationType?: string; rateLimitTier?: string } | undefined;
+  try {
+    const response = await fetch('https://api.anthropic.com/api/oauth/profile', {
+      headers: { Authorization: `Bearer ${accessToken}`, 'anthropic-beta': 'oauth-2025-04-20' },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (response.ok) {
+      const root = toObject(await response.json());
+      const org = toObject(root?.organization);
+      if (org)
+        value = {
+          organizationType:
+            typeof org.organization_type === 'string' ? org.organization_type : undefined,
+          rateLimitTier: typeof org.rate_limit_tier === 'string' ? org.rate_limit_tier : undefined,
+        };
+    }
+  } catch {
+    /* Profile failure must not hide valid quotas. */
+  }
+  profileCache.set(accountId, { expires: Date.now() + 15 * 60_000, value });
+  return value;
 }
