@@ -14,7 +14,7 @@ jobs:
           bun-version: 1.3.9
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun run typecheck
-      - run: bun test tests/unit/cliproxy/claude-named-limits.test.ts tests/unit/web-server/account-history.test.ts
+      - run: bun test tests/unit/cliproxy/claude-named-limits.test.ts tests/unit/web-server/account-history.test.ts tests/unit/cliproxy/claude-credits.test.ts
       - name: Build image from fork source
         run: docker build -f docker/Dockerfile.homelab -t ccs-homelab:${{ github.sha }} .
       - name: Export image

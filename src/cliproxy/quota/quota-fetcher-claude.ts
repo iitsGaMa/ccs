@@ -1,3 +1,4 @@
+import { claudeCredits } from './claude-credits';
 /**
  * Quota Fetcher for Claude (Anthropic) Accounts
  *
@@ -336,6 +337,7 @@ async function runClaudeUsageFetch(
         success: true,
         windows,
         coreUsage,
+        credits: claudeCredits(payload as Record<string, unknown>),
         lastUpdated: Date.now(),
         accountId,
       };

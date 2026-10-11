@@ -52,3 +52,9 @@ attribué par CLIProxy : tokens entrée/sortie/cache, requêtes et estimation AP
 Les requêtes échouées et sans attribution sont exclues. Les dates du premier et
 du dernier enregistrement indiquent la couverture. Ce n'est pas la facturation
 d'un abonnement ni un historique complet des usages directs chez Claude.
+
+## Dépenses supplémentaires
+
+Les montants proviennent du champ `spend` de Claude, avec sa devise et son unité.
+Le plafond de dépenses ne représente pas des crédits achetés. Un solde absent
+reste non communiqué ; les champs internes non identifiés ne sont pas utilisés.

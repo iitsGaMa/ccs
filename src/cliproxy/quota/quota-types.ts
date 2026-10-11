@@ -160,6 +160,7 @@ export interface ClaudeCoreUsageSummary {
  * Claude quota fetch result
  */
 export interface ClaudeQuotaResult extends QuotaErrorMetadata {
+  credits?: import('./claude-credits').ClaudeCredits;
   /** Whether fetch succeeded */
   success: boolean;
   /** Policy limit windows */
