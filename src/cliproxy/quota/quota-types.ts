@@ -162,6 +162,7 @@ export interface ClaudeCoreUsageSummary {
 export interface ClaudeQuotaResult extends QuotaErrorMetadata {
   plan?: { organizationType?: string; rateLimitTier?: string };
   credits?: import('./claude-credits').ClaudeCredits;
+  cloudCredits?: ReturnType<typeof import('./claude-credits').claudeCloudCredits>;
   /** Whether fetch succeeded */
   success: boolean;
   /** Policy limit windows */

@@ -44,3 +44,37 @@ export function claudeCredits(payload: Record<string, unknown>): ClaudeCredits |
     balance: amount(spend.balance),
   };
 }
+
+/** Promotional cloud credits follow CodexBar's interpretation of iguana_necktie.
+ * Values are USD already; never mix them with prepaid spend or recurring quotas.
+ */
+export function claudeCloudCredits(payload: Record<string, unknown>) {
+  const raw = object(payload.iguana_necktie);
+  if (!raw) return undefined;
+  const limit = raw.limit_dollars;
+  if (typeof limit !== 'number' || !Number.isFinite(limit) || limit <= 0) return undefined;
+  const valid = (v: unknown): v is number =>
+    typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= limit;
+  if (raw.used_dollars != null && !valid(raw.used_dollars)) return undefined;
+  if (raw.remaining_dollars != null && !valid(raw.remaining_dollars)) return undefined;
+  const remaining = valid(raw.remaining_dollars)
+    ? raw.remaining_dollars
+    : valid(raw.used_dollars)
+      ? limit - raw.used_dollars
+      : undefined;
+  if (remaining === undefined) return undefined;
+  const expiry =
+    raw.resets_at == null
+      ? undefined
+      : typeof raw.resets_at === 'string'
+        ? Date.parse(raw.resets_at)
+        : NaN;
+  if (expiry !== undefined && !Number.isFinite(expiry)) return undefined;
+  return {
+    limitDollars: limit,
+    usedDollars: limit - remaining,
+    remainingDollars: remaining,
+    expiresAt: expiry === undefined ? undefined : new Date(expiry).toISOString(),
+    locked: typeof raw.locked_reason === 'string' && raw.locked_reason.trim().length > 0,
+  };
+}
