@@ -30,3 +30,22 @@ test('does not turn internal billing fields or malformed limits into quotas', ()
   expect(windows.map((window) => window.rateLimitType)).toEqual(['five_hour', 'seven_day']);
   expect(windows[1].usedPercent).toBe(7);
 });
+
+
+test('preserves zero session usage without a reset date in both OAuth formats', () => {
+  const legacy = buildClaudeQuotaWindows({
+    five_hour: { utilization: 0, resets_at: null }, seven_day: null,
+  });
+  const named = buildClaudeQuotaWindows({
+    limits: [{ kind: 'session', percent: 0, resets_at: null }], seven_day: null,
+  });
+  expect(legacy).toHaveLength(1);
+  expect(named).toHaveLength(1);
+  for (const windows of [legacy, named]) {
+    expect(windows[0]).toMatchObject({
+      rateLimitType: 'five_hour', usedPercent: 0, remainingPercent: 100, resetAt: null,
+    });
+    expect(buildClaudeCoreUsageSummary(windows).fiveHour?.remainingPercent).toBe(100);
+    expect(buildClaudeCoreUsageSummary(windows).weekly).toBeNull();
+  }
+});

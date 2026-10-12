@@ -223,7 +223,8 @@ function isClaudeOAuthUsageWindowCandidate(key: string, raw: Record<string, unkn
   if (asNumber(raw['utilization']) === null) return false;
 
   const resetAt = raw['resetsAt'] ?? raw['resets_at'] ?? raw['resetAt'] ?? raw['reset_at'] ?? null;
-  return resetAt !== null && resetAt !== undefined;
+  // Idle/reset sessions can report zero usage without a running reset clock.
+  return (key === 'five_hour' && asNumber(raw['utilization']) === 0) || resetAt != null;
 }
 
 export function buildClaudeQuotaWindows(payload: Record<string, unknown>): ClaudeQuotaWindow[] {
@@ -254,7 +255,8 @@ export function buildClaudeQuotaWindows(payload: Record<string, unknown>): Claud
       const kind = asString(raw['kind']);
       const percent = asNumber(raw['percent']);
       const resetAt = normalizeTimestamp(raw['resets_at']);
-      if (!kind || percent === null || percent < 0 || !resetAt) continue;
+      if (!kind || percent === null || percent < 0) continue;
+      if (!resetAt && !(kind === 'session' && percent === 0)) continue;
       const scope = toObject(raw['scope']);
       const model = toObject(scope?.['model']);
       const modelName = asString(model?.['display_name']);
