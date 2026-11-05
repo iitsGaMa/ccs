@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { resolveEffectiveDrainOrder } from '../../cliproxy/accounts/drain-order';
 
 import { createLogger } from '../../services/logging';
 import {
@@ -498,7 +499,17 @@ router.get('/accounts/:provider', (req: Request, res: Response): void => {
 
   try {
     const accounts = getProviderAccounts(provider as CLIProxyProvider);
-    res.json({ provider, accounts });
+    const order = resolveEffectiveDrainOrder(
+      provider as CLIProxyProvider,
+      accounts
+        .filter((account) => !account.paused)
+        .map((account) => ({
+          accountId: account.id,
+          tokenFile: account.tokenFile,
+          tier: account.tier,
+        }))
+    );
+    res.json({ provider, accounts, drainOrder: order.entries.map((entry) => entry.accountId) });
   } catch (error) {
     respondInternalError(res, error, 'Failed to get provider accounts.');
   }

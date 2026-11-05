@@ -87,7 +87,13 @@ export function registerQuotaRoutes(router: Router): void {
     }
 
     try {
-      const cached = getCachedQuota<ClaudeQuotaResult>('claude', accountId);
+      // Explicit clicks bypass the ordinary two-minute cache, while repeated
+      // clicks share readings younger than 15 seconds.
+      const cached = getCachedQuota<ClaudeQuotaResult>(
+        'claude',
+        accountId,
+        req.query['refresh'] === 'true' ? 15_000 : undefined
+      );
       if (cached) {
         res.json({ ...cached, cached: true });
         return;
