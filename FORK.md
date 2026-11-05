@@ -49,6 +49,13 @@ Aucun compte, cookie, jeton ou fichier de configuration réel ne doit entrer dan
 Les workflows de publication upstream restent désactivés dans les réglages du fork ;
 seul **Homelab build** est activé. La CI lit des fixtures, jamais les comptes du homelab.
 
+## Écoute de CLIProxy (8.11+)
+
+CCS 8.11 réécrit `host` dans `cliproxy/config.yaml` : `127.0.0.1` hors Docker, sauf si
+`CCS_CLIPROXY_HOST` est défini. Sans cette variable, le port publié 8317 ne répond plus
+(incident du 05/11/2026, ~10 min). `Dockerfile.homelab` la fixe à `0.0.0.0` comme les images
+upstream, et le compose homelab la répète. L'exposition reste limitée à l'IP Tailscale.
+
 ## Ordre de drain (8.11+)
 
 CCS réapplique désormais automatiquement l'ordre manuel stocké dans `accounts.json`

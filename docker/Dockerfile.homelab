@@ -21,5 +21,8 @@ COPY docker/supervisord.conf /etc/supervisord.conf
 COPY docker/entrypoint-integrated.sh /entrypoint-integrated.sh
 RUN chmod +x /entrypoint-integrated.sh /opt/ccs/dist/ccs.js && mkdir -p /var/log/ccs && ln -s /opt/ccs/dist/ccs.js /usr/local/bin/ccs && ln -s /opt/ccs/dist/docker/docker-bootstrap.js /usr/local/bin/ccs-docker-bootstrap
 ENV CCS_CLIPROXY_NO_PLUGIN_ASSET=1
+# Same as upstream images: CLIProxy must listen on all container interfaces or
+# published ports cannot reach it (CCS 8.11 rewrites host to 127.0.0.1 otherwise).
+ENV CCS_CLIPROXY_HOST=0.0.0.0
 EXPOSE 3000 8317
 ENTRYPOINT ["/entrypoint-integrated.sh"]
