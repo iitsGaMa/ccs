@@ -67,7 +67,10 @@ par compte, et n'est ajouté qu'aux lectures réussies par la route du dashboard
 `GET /api/bar/account-history` utilise l'authentification existante du dashboard.
 La réponse expose uniquement les totaux quotidiens UTC sur 30 jours, par compte
 attribué par CLIProxy : tokens entrée/sortie/cache, requêtes et estimation API.
-Les requêtes échouées et sans attribution sont exclues. Les dates du premier et
+Les requêtes échouées et sans attribution sont exclues. L'appel démarre le synchroniseur
+CLIProxy (5 min) s'il ne tourne pas : upstream ne le lance qu'à l'ouverture de la page
+Analytics, et l'historique s'est figé du 30/10 au 05/11/2026 faute de visite après un
+redémarrage. La file d'usage de CLIProxy ne garde que les 1000 dernières requêtes. Les dates du premier et
 du dernier enregistrement indiquent la couverture. Ce n'est pas la facturation
 d'un abonnement ni un historique complet des usages directs chez Claude.
 

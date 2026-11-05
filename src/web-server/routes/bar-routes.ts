@@ -1,4 +1,5 @@
 import { accountHistory } from '../usage/account-history';
+import { startCliproxySync } from '../usage/cliproxy-usage-syncer';
 /**
  * Bar Routes — /api/bar/summary aggregator
  *
@@ -636,6 +637,9 @@ export function createBarRouter(deps: BarRouterDeps): Router {
   });
 
   router.get('/account-history', async (_req: Request, res: Response): Promise<void> => {
+    // Homelab fork: the snapshot only advances while the periodic syncer runs,
+    // and upstream starts it lazily from the Analytics page. Idempotent.
+    startCliproxySync();
     try {
       const details = await withTimeout(deps.loadCliproxyDetails(), SIDELOAD_TIMEOUT_MS);
       if (!details) {
