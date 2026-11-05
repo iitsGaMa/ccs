@@ -207,6 +207,27 @@ describe('Model Catalog', () => {
       assert.strictEqual(sonnet55.extendedContext, true);
     });
 
+    it('includes Claude Haiku 5.5 with adaptive levels, 1M context, and no zero budget', () => {
+      const { MODEL_CATALOG } = modelCatalog;
+      const haiku55 = MODEL_CATALOG.claude.models.find((m) => m.id === 'claude-haiku-5-5');
+      assert(haiku55, 'Should include Claude Haiku 5.5');
+      assert.strictEqual(haiku55.name, 'Claude Haiku 5.5');
+      assert.strictEqual(haiku55.contextWindow, 1000000);
+      assert.strictEqual(haiku55.thinking.type, 'levels');
+      assert.deepStrictEqual(haiku55.thinking.levels, ['low', 'medium', 'high', 'xhigh', 'max']);
+      assert.strictEqual(haiku55.thinking.maxLevel, 'max');
+      assert.strictEqual(haiku55.thinking.dynamicAllowed, true);
+      // `thinking.type: "disabled"` returns 400 on Haiku 5.5 at effort xhigh/max.
+      assert.strictEqual(haiku55.thinking.zeroAllowed, undefined);
+      assert.strictEqual(haiku55.nativeImageInput, true);
+      assert.strictEqual(haiku55.extendedContext, true);
+
+      // Haiku 4.5 keeps its 200K window and no thinking control.
+      const haiku45 = MODEL_CATALOG.claude.models.find((m) => m.id === 'claude-haiku-4-5-20251001');
+      assert.strictEqual(haiku45.contextWindow, 200000);
+      assert.strictEqual(haiku45.thinking.type, 'none');
+    });
+
     it('includes Claude Sonnet 5 with adaptive levels and extended context', () => {
       const { MODEL_CATALOG } = modelCatalog;
       const sonnet = MODEL_CATALOG.claude.models.find((m) => m.id === 'claude-sonnet-5');

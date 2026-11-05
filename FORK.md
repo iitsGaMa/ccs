@@ -3,7 +3,12 @@
 - Fork : https://github.com/iitsGaMa/ccs
 - Source officielle (`upstream`) : https://github.com/kaitranntt/ccs
 - Branche maintenue : `homelab`, issue de `upstream/dev` conformément au guide du projet.
-- Correctif : lire les limites Claude nommées et leurs modèles, ignorer les champs internes non identifiés.
+- Depuis 8.11.0, la lecture des limites Claude nommées (`weekly_scoped:<modèle>`, `scope`,
+  `cadence`, `modelLabel`) et l'exclusion des crédits monétaires viennent d'upstream.
+  Le fork n'ajoute plus que : `credits`, `cloudCredits`, `plan`, l'historique par compte,
+  `drainOrder` sur `GET /api/cliproxy/auth/accounts/:provider` et `?refresh=true` sur
+  `GET /api/cliproxy/quota/claude/:account` (cache réduit à 15 s pour un clic explicite).
+- Les fenêtres `scope: "unknown"` restent dans la réponse ; CodeNotch les ignore.
 
 ## Intégrer une mise à jour
 
@@ -43,6 +48,19 @@ puis déployer. Garder l'ancienne image pour le retour arrière. Ne pas exécute
 Aucun compte, cookie, jeton ou fichier de configuration réel ne doit entrer dans Git.
 Les workflows de publication upstream restent désactivés dans les réglages du fork ;
 seul **Homelab build** est activé. La CI lit des fixtures, jamais les comptes du homelab.
+
+## Ordre de drain (8.11+)
+
+CCS réapplique désormais automatiquement l'ordre manuel stocké dans `accounts.json`
+après une réauthentification ou une synchronisation du registre. L'ordre stocké doit donc
+refléter les priorités voulues : `ccs cliproxy accounts order claude` ne doit afficher
+aucune dérive. Le mode `--by-quota` (priorité par classe de quota) reste désactivé.
+
+## Plan d'abonnement
+
+`plan` (type d'organisation et palier) provient de `/api/oauth/profile`, mis en cache 15 min
+par compte, et n'est ajouté qu'aux lectures réussies par la route du dashboard
+(`src/cliproxy/quota/claude-plan.ts`). Le fetcher upstream n'est pas modifié.
 
 ## Historique du proxy
 

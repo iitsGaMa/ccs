@@ -6,11 +6,20 @@ import {
   parseCodexUnsupportedModelError,
   resolveRuntimeCodexFallbackModel,
 } from './codex-plan-compatibility';
+import { parseCodexModelTuningAlias } from './model-id-normalizer';
 import { getModelMaxLevel, getModelThinkingSupport } from '../model-catalog';
 import {
   attachUpstreamResponseTimeout,
+  resolveUpstreamTimeoutMs,
   writeForwardResponseHead,
 } from '../proxy/upstream-response-timeout';
+import { hasEncodedBody, setUpstreamAcceptEncoding } from '../proxy/content-encoding';
+import { createLogger } from '../../services/logging';
+import {
+  readRequestBody,
+  RequestBodyTooLargeError,
+  respondRequestTooLarge,
+} from '../../utils/request-body';
 
 export type CodexReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type CodexServiceTier = 'fast';
@@ -52,7 +61,6 @@ interface ForwardJsonContext {
 }
 
 const EXTENDED_CONTEXT_SUFFIX_REGEX = /\[1m\]$/i;
-const CODEX_TUNING_SUFFIX_TOKEN_REGEX = /-(none|minimal|low|medium|high|xhigh|max|fast)$/i;
 const CODEX_SERVICE_TIER_REQUEST_VALUE: Record<CodexServiceTier, CodexServiceTierRequestValue> = {
   fast: 'priority',
 };
@@ -67,37 +75,6 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function parseModelTuningSuffix(model: string): {
-  upstreamModel: string;
-  effort: CodexReasoningEffort | null;
-  serviceTier: CodexServiceTier | null;
-} | null {
-  const normalizedModel = stripExtendedContextSuffix(model);
-  let upstreamModel = normalizedModel;
-  let effort: CodexReasoningEffort | null = null;
-  let serviceTier: CodexServiceTier | null = null;
-
-  for (let consumed = 0; consumed < 2; consumed += 1) {
-    const match = upstreamModel.match(CODEX_TUNING_SUFFIX_TOKEN_REGEX);
-    if (!match?.[1]) break;
-
-    const token = match[1].toLowerCase();
-    if (token === 'fast') {
-      if (serviceTier) break;
-      serviceTier = 'fast';
-    } else {
-      if (effort) break;
-      effort = token as CodexReasoningEffort;
-    }
-
-    upstreamModel = upstreamModel.slice(0, -match[0].length).trim();
-  }
-
-  if (!effort && !serviceTier) return null;
-  if (!upstreamModel) return null;
-  return { upstreamModel, effort, serviceTier };
 }
 
 function isKnownCodexModelId(
@@ -242,16 +219,14 @@ export function injectCodexRequestTuningIntoBody(
 ): unknown {
   if (!isRecord(body)) return body;
 
-  // OpenAI Responses API knob: reasoning: { effort: "..." }
-  // Always override effort (user expectation).
-  const existingReasoning = isRecord(body.reasoning) ? body.reasoning : {};
   const tunedBody = { ...body };
 
-  if (tuning.effort) {
-    tunedBody.reasoning = {
-      ...existingReasoning,
-      effort: tuning.effort,
-    };
+  // CLIProxy reads effort from a `model(level)` suffix and gives it priority over the
+  // request body. Its Claude Messages translator ignores a top-level `reasoning` field.
+  // Strip any pre-existing parenthesized suffix to avoid generating `model(a)(b)`.
+  if (tuning.effort && typeof body.model === 'string') {
+    const baseModel = body.model.replace(/\([^()]*\)$/, '').trim();
+    tunedBody.model = `${baseModel}(${tuning.effort})`;
   }
 
   if (tuning.serviceTier) {
@@ -279,6 +254,7 @@ export class CodexReasoningProxy {
     Pick<CodexReasoningProxyConfig, 'modelMap' | 'stripPathPrefix'>;
   private readonly modelEffort: Map<string, CodexReasoningEffort>;
   private readonly sessionFallbackByModel = new Map<string, string>();
+  private readonly logger = createLogger('cliproxy:codex-reasoning-proxy');
   private readonly recent: Array<{
     at: string;
     model: string | null;
@@ -301,7 +277,7 @@ export class CodexReasoningProxy {
     this.config = {
       upstreamBaseUrl: config.upstreamBaseUrl,
       verbose: config.verbose ?? false,
-      timeoutMs: config.timeoutMs ?? 120000,
+      timeoutMs: config.timeoutMs ?? resolveUpstreamTimeoutMs(),
       modelMap: config.modelMap,
       defaultEffort: config.defaultEffort ?? 'medium',
       traceFilePath: config.traceFilePath ?? '',
@@ -348,7 +324,7 @@ export class CodexReasoningProxy {
     clientRes: http.ServerResponse,
     statusCode: number,
     headers: http.IncomingHttpHeaders,
-    responseBody: string
+    responseBody: string | Buffer
   ): void {
     writeForwardResponseHead(clientRes, statusCode, headers);
     clientRes.end(responseBody);
@@ -365,12 +341,16 @@ export class CodexReasoningProxy {
     serviceTier: CodexServiceTier | null;
   } | null {
     if (!model) return null;
-    const parsed = parseModelTuningSuffix(model);
-    if (!parsed) return null;
-    if (!isKnownCodexModelId(parsed.upstreamModel, this.modelEffort)) {
+    const parsed = parseCodexModelTuningAlias(model);
+    if (!parsed?.baseModel) return null;
+    if (!isKnownCodexModelId(parsed.baseModel, this.modelEffort)) {
       return null;
     }
-    return parsed;
+    return {
+      upstreamModel: parsed.baseModel,
+      effort: parsed.effort,
+      serviceTier: parsed.serviceTier,
+    };
   }
 
   private log(message: string): void {
@@ -450,27 +430,6 @@ export class CodexReasoningProxy {
     this.port = null;
   }
 
-  private readBody(req: http.IncomingMessage): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const chunks: Buffer[] = [];
-      const maxSize = 10 * 1024 * 1024; // 10MB
-      let total = 0;
-
-      req.on('data', (chunk: Buffer) => {
-        total += chunk.length;
-        if (total > maxSize) {
-          req.destroy(); // Signal client to stop sending
-          reject(new Error('Request body too large (max 10MB)'));
-          return;
-        }
-        chunks.push(chunk);
-      });
-
-      req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-      req.on('error', reject);
-    });
-  }
-
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const method = req.method || 'GET';
     let requestPath = req.url || '/';
@@ -523,7 +482,7 @@ export class CodexReasoningProxy {
         return;
       }
 
-      const rawBody = await this.readBody(req);
+      const rawBody = await readRequestBody(req);
       let parsed: unknown;
       try {
         parsed = rawBody.length ? JSON.parse(rawBody) : {};
@@ -540,8 +499,7 @@ export class CodexReasoningProxy {
         : null;
 
       // Support "model aliases" like `gpt-5.4-high-fast` by translating to:
-      // - upstream model: `gpt-5.4`
-      // - reasoning.effort: `high`
+      // - model: `gpt-5.4(high)` (CLIProxy thinking suffix)
       // - service_tier: `priority` (Codex request value for fast mode)
       //
       // This allows tier/speed mapping without inventing upstream model IDs.
@@ -552,12 +510,13 @@ export class CodexReasoningProxy {
       const requestedEffort =
         suffixParsed?.effort ??
         getEffortForModel(normalizedRequestModel, this.modelEffort, this.config.defaultEffort);
+      // Unknown model IDs pass through unchanged: a suffix could break their routing.
       const effort =
-        !this.config.disableEffort && upstreamModel
+        !this.config.disableEffort &&
+        upstreamModel &&
+        isKnownCodexModelId(upstreamModel, this.modelEffort)
           ? normalizeCodexEffortForModel(upstreamModel, requestedEffort)
-          : !this.config.disableEffort
-            ? requestedEffort
-            : null;
+          : null;
       const serviceTier = suffixParsed?.serviceTier ?? null;
       const rewritten = this.buildForwardBody(parsed, upstreamModel, { effort, serviceTier });
 
@@ -585,7 +544,17 @@ export class CodexReasoningProxy {
         retryCount: 0,
       });
     } catch (error) {
+      if (error instanceof RequestBodyTooLargeError) {
+        respondRequestTooLarge(req, res, error, this.logger);
+        return;
+      }
       const err = error as Error;
+      this.logger.warn('codex-reasoning.proxy.request-error', `Error: ${err.message}`, {
+        error: err.message,
+        method,
+        path: requestPath,
+      });
+      if (res.writableEnded || res.destroyed || req.socket?.destroyed) return;
       if (!res.headersSent) {
         res.writeHead(502, { 'Content-Type': 'application/json' });
       }
@@ -619,6 +588,7 @@ export class CodexReasoningProxy {
       if (hopByHop.has(lower)) continue;
       headers[key] = value;
     }
+    setUpstreamAcceptEncoding(headers);
 
     if (bodyString !== undefined) {
       headers['Content-Type'] = headers['Content-Type'] || 'application/json';
@@ -804,7 +774,21 @@ export class CodexReasoningProxy {
               return;
             }
             try {
-              const responseBody = Buffer.concat(chunks).toString('utf8');
+              const rawBody = Buffer.concat(chunks);
+              // A compressed error body can't be parsed for the model fallback;
+              // forward it byte-for-byte instead of corrupting it as text.
+              if (hasEncodedBody(upstreamRes.headers)) {
+                this.logger.warn(
+                  'codex-reasoning-proxy.encoded-passthrough',
+                  'Upstream compressed an error response despite Accept-Encoding: identity. Passing it through without model fallback.',
+                  { contentEncoding: upstreamRes.headers['content-encoding'], statusCode }
+                );
+                this.sendBufferedResponse(clientRes, statusCode, upstreamRes.headers, rawBody);
+                resolve(statusCode);
+                return;
+              }
+
+              const responseBody = rawBody.toString('utf8');
               const unsupportedError =
                 context.retryCount === 0
                   ? parseCodexUnsupportedModelError(statusCode, responseBody)

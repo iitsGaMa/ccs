@@ -10,6 +10,7 @@ import { Router, Request, Response } from 'express';
 import { fetchAccountQuota } from '../../../cliproxy/quota/quota-fetcher';
 import { fetchCodexQuota } from '../../../cliproxy/quota/quota-fetcher-codex';
 import { fetchClaudeQuota } from '../../../cliproxy/quota/quota-fetcher-claude';
+import { withClaudePlan } from '../../../cliproxy/quota/claude-plan';
 import { fetchGeminiCliQuota } from '../../../cliproxy/quota/quota-fetcher-gemini-cli';
 import { fetchGhcpQuota } from '../../../cliproxy/quota/quota-fetcher-ghcp';
 import { getCachedQuota, setCachedQuota } from '../../../cliproxy/quota/quota-response-cache';
@@ -99,7 +100,7 @@ export function registerQuotaRoutes(router: Router): void {
         return;
       }
 
-      const result = await fetchClaudeQuota(accountId);
+      const result = await withClaudePlan(await fetchClaudeQuota(accountId));
 
       if (shouldCacheQuotaResult(result)) {
         setCachedQuota('claude', accountId, result);

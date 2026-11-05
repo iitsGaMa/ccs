@@ -383,6 +383,20 @@ describe('model-pricing', () => {
       // Date-stamped ids resolve via stripDateSuffix.
       expect(getModelPricing('claude-sonnet-5-5-20260928').inputPerMillion).toBe(2.0);
     });
+    it('should return the <=100K-prompt rates for every Claude Haiku 5.5 id variant', () => {
+      // Haiku 5.5 is $0.10/$0.50 up to 100K prompt tokens; none of these ids may
+      // fall through to Haiku 4.5's $1/$5 or the $3/$15 unknown-model fallback.
+      for (const id of ['claude-haiku-5-5', 'claude-haiku-5-5-thinking', 'claude-haiku-5.5']) {
+        const haiku55 = getModelPricing(id);
+        expect(haiku55.inputPerMillion).toBe(0.1);
+        expect(haiku55.outputPerMillion).toBe(0.5);
+        expect(haiku55.cacheCreationPerMillion).toBe(0.125);
+        expect(haiku55.cacheReadPerMillion).toBe(0.01);
+        expect(haiku55.serviceTiers).toBeUndefined();
+        expect(hasCustomPricing(id)).toBe(true);
+      }
+      expect(getModelPricing('claude-haiku-4-5').inputPerMillion).toBe(1.0);
+    });
     it('should return correct pricing for Claude Opus 5.5 and fast mode', () => {
       const opus55 = getModelPricing('claude-opus-5-5');
       expect(opus55.inputPerMillion).toBe(4.0);
@@ -589,6 +603,7 @@ describe('model-pricing', () => {
       const models = getKnownModels();
       expect(models).toContain('claude-sonnet-5');
       expect(models).toContain('claude-sonnet-5-5');
+      expect(models).toContain('claude-haiku-5-5');
       expect(models).toContain('gpt-6.1-sol');
       expect(models).toContain('gpt-6-sol');
       expect(models).toContain('gpt-6-luna');

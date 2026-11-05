@@ -317,6 +317,42 @@ describe('SharedManager', () => {
         path.resolve(path.dirname(sharedSettingsPath), fs.readlinkSync(sharedSettingsPath))
       ).toBe(claudeSettingsPath);
     });
+
+    it('keeps correct instance symlinks in place when relinking', () => {
+      const manager = new SharedManager();
+      const instancePath = instanceDir('work');
+      const names = ['settings.json', 'CLAUDE.md', 'commands', 'skills', 'agents'];
+
+      fs.mkdirSync(claudeDir(), { recursive: true });
+      fs.mkdirSync(instancePath, { recursive: true });
+      writeJson(path.join(claudeDir(), 'settings.json'), { theme: 'dark' });
+
+      manager.linkSharedDirectories(instancePath);
+      const before = names.map((name) => fs.lstatSync(path.join(instancePath, name)).ino);
+
+      manager.linkSharedDirectories(instancePath);
+      const after = names.map((name) => fs.lstatSync(path.join(instancePath, name)).ino);
+
+      expect(after).toEqual(before);
+      expect(readJson(path.join(instancePath, 'settings.json'))).toEqual({ theme: 'dark' });
+    });
+
+    it('re-points instance symlinks that target the wrong path', () => {
+      const manager = new SharedManager();
+      const instancePath = instanceDir('work');
+      const instanceSettingsPath = path.join(instancePath, 'settings.json');
+
+      fs.mkdirSync(claudeDir(), { recursive: true });
+      fs.mkdirSync(instancePath, { recursive: true });
+      writeJson(path.join(claudeDir(), 'settings.json'), { theme: 'dark' });
+      fs.symlinkSync(path.join(tempRoot, 'missing.json'), instanceSettingsPath, 'file');
+
+      manager.linkSharedDirectories(instancePath);
+
+      expect(
+        path.resolve(path.dirname(instanceSettingsPath), fs.readlinkSync(instanceSettingsPath))
+      ).toBe(path.join(ccsDir(), 'shared', 'settings.json'));
+    });
   });
 
   describe('diverged settings adoption', () => {
@@ -1326,6 +1362,29 @@ describe('SharedManager', () => {
       expect(readMarketplaceLocation(globalRegistryPath)).toBe(marketplacePath(claudeDir()));
       expect(readMarketplaceLocation(instanceRegistryPath)).toBe(marketplacePath(instancePath));
       expect(fs.existsSync(path.join(instancePath, 'plugins', 'marketplaces'))).toBe(true);
+    });
+
+    it('treats .last_inuse_sweep as instance-local and unlinks legacy symlinks (Issue #1756)', () => {
+      const globalPluginsDir = path.join(claudeDir(), 'plugins');
+      fs.mkdirSync(globalPluginsDir, { recursive: true });
+      fs.writeFileSync(path.join(globalPluginsDir, '.last_inuse_sweep'), '2026-10-20T00:00:00.000Z');
+
+      const instancePath = instanceDir('work');
+      const instancePluginsDir = path.join(instancePath, 'plugins');
+      fs.mkdirSync(instancePluginsDir, { recursive: true });
+
+      // Create a legacy symlink pointing to the global sweep file
+      fs.symlinkSync(
+        path.join(globalPluginsDir, '.last_inuse_sweep'),
+        path.join(instancePluginsDir, '.last_inuse_sweep'),
+        'file'
+      );
+
+      const manager = new SharedManager();
+      manager.linkSharedDirectories(instancePath);
+
+      // The legacy symlink must have been removed and not recreated
+      expect(fs.existsSync(path.join(instancePluginsDir, '.last_inuse_sweep'))).toBe(false);
     });
   });
 });

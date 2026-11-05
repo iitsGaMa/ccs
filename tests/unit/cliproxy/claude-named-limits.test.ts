@@ -4,6 +4,8 @@ import {
   buildClaudeCoreUsageSummary,
 } from '../../../src/cliproxy/quota/quota-fetcher-claude-normalizer';
 
+// Homelab regressions kept after upstream 8.11 took over named-limit parsing.
+
 test('reads scoped weekly limits alongside session without a global weekly quota', () => {
   const resets_at = '2026-10-17T04:00:00Z';
   const windows = buildClaudeQuotaWindows({
@@ -15,11 +17,18 @@ test('reads scoped weekly limits alongside session without a global weekly quota
     ],
   });
   expect(windows).toHaveLength(2);
-  expect(windows[1]).toMatchObject({ label: 'Fable', usedPercent: 0, remainingPercent: 100 });
-  expect(buildClaudeCoreUsageSummary(windows).weekly?.label).toBe('Fable');
+  expect(windows.find((window) => window.scope === 'model')).toMatchObject({
+    rateLimitType: 'weekly_scoped:fable',
+    cadence: 'weekly',
+    modelLabel: 'Fable',
+    usedPercent: 0,
+    remainingPercent: 100,
+  });
+  // Model windows never stand in for the account-wide weekly quota.
+  expect(buildClaudeCoreUsageSummary(windows).weekly).toBeNull();
 });
 
-test('does not turn internal billing fields or malformed limits into quotas', () => {
+test('does not turn credit grants or malformed limits into quotas', () => {
   const resets_at = '2026-10-17T04:00:00Z';
   const windows = buildClaudeQuotaWindows({
     five_hour: { utilization: 2, resets_at },
@@ -31,19 +40,22 @@ test('does not turn internal billing fields or malformed limits into quotas', ()
   expect(windows[1].usedPercent).toBe(7);
 });
 
-
 test('preserves zero session usage without a reset date in both OAuth formats', () => {
   const legacy = buildClaudeQuotaWindows({
-    five_hour: { utilization: 0, resets_at: null }, seven_day: null,
+    five_hour: { utilization: 0, resets_at: null },
+    seven_day: null,
   });
   const named = buildClaudeQuotaWindows({
-    limits: [{ kind: 'session', percent: 0, resets_at: null }], seven_day: null,
+    limits: [{ kind: 'session', percent: 0, resets_at: null }],
+    seven_day: null,
   });
-  expect(legacy).toHaveLength(1);
-  expect(named).toHaveLength(1);
   for (const windows of [legacy, named]) {
+    expect(windows).toHaveLength(1);
     expect(windows[0]).toMatchObject({
-      rateLimitType: 'five_hour', usedPercent: 0, remainingPercent: 100, resetAt: null,
+      rateLimitType: 'five_hour',
+      usedPercent: 0,
+      remainingPercent: 100,
+      resetAt: null,
     });
     expect(buildClaudeCoreUsageSummary(windows).fiveHour?.remainingPercent).toBe(100);
     expect(buildClaudeCoreUsageSummary(windows).weekly).toBeNull();

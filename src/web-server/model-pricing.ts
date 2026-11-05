@@ -120,6 +120,28 @@ const PRICING_REGISTRY: Record<string, ModelPricing> = {
     cacheCreationPerMillion: 1.25,
     cacheReadPerMillion: 0.1,
   },
+  // Claude Haiku 5.5 - two rate cards chosen by prompt length: $0.10/$0.50 up to
+  // 100K prompt tokens, $0.50/$2.50 above. Cost is calculated on aggregated usage,
+  // so the per-request card can't be picked here; using the <=100K card as default
+  // (same approach as Gemini 3) under-reports prompts longer than 100K tokens.
+  'claude-haiku-5-5': {
+    inputPerMillion: 0.1,
+    outputPerMillion: 0.5,
+    cacheCreationPerMillion: 0.125,
+    cacheReadPerMillion: 0.01,
+  },
+  'claude-haiku-5-5-thinking': {
+    inputPerMillion: 0.1,
+    outputPerMillion: 0.5,
+    cacheCreationPerMillion: 0.125,
+    cacheReadPerMillion: 0.01,
+  },
+  'claude-haiku-5.5': {
+    inputPerMillion: 0.1,
+    outputPerMillion: 0.5,
+    cacheCreationPerMillion: 0.125,
+    cacheReadPerMillion: 0.01,
+  },
   // Claude 3.5 Sonnet (deprecated, same as Sonnet 3.7: $3/$15)
   'claude-3-5-sonnet-20240620': {
     inputPerMillion: 3.0,

@@ -780,9 +780,26 @@ export const MODEL_CATALOG: Partial<Record<CLIProxyProvider, ProviderCatalog>> =
         extendedContext: true,
       },
       {
+        id: 'claude-haiku-5-5',
+        name: 'Claude Haiku 5.5',
+        description: 'Fast and efficient (1M context, 128K output)',
+        contextWindow: 1000000,
+        nativeImageInput: true,
+        // Adaptive thinking is on by default (default effort `medium`); Anthropic
+        // rejects manual budget_tokens with 400 and accepts `thinking.type: "disabled"`
+        // only at effort `high` or below, so zero is not allowed.
+        thinking: {
+          type: 'levels',
+          levels: ['low', 'medium', 'high', 'xhigh', 'max'],
+          maxLevel: 'max',
+          dynamicAllowed: true,
+        },
+        extendedContext: true,
+      },
+      {
         id: 'claude-haiku-4-5-20251001',
         name: 'Claude Haiku 4.5',
-        description: 'Fast and efficient',
+        description: 'Previous Haiku model',
         contextWindow: 200000,
         nativeImageInput: true,
         thinking: { type: 'none' },

@@ -1,4 +1,3 @@
-import { claudeCredits, claudeCloudCredits } from './claude-credits';
 /**
  * Quota Fetcher for Claude (Anthropic) Accounts
  *
@@ -8,24 +7,68 @@ import { claudeCredits, claudeCloudCredits } from './claude-credits';
 import * as path from 'node:path';
 import * as fsp from 'node:fs/promises';
 import { getAuthDir } from '../config/config-generator';
-import { getPausedDir, getProviderAccounts } from '../accounts/account-manager';
+import { getAccount, getPausedDir, getProviderAccounts } from '../accounts/account-manager';
 import { sanitizeEmail, isTokenExpired } from '../auth/auth-utils';
 import type { ClaudeQuotaResult } from './quota-types';
+import { claudeCredits, claudeCloudCredits } from './claude-credits';
 import {
   buildClaudeQuotaWindows,
   buildClaudeCoreUsageSummary,
+  buildClaudeGeneralWindowPresence,
 } from './quota-fetcher-claude-normalizer';
 import { createLogger } from '../../services/logging';
+import {
+  CLAUDE_PROBE_SHARED_TTL_MS,
+  buildStaleClaudeResult,
+  computeClaudeProbeCooldownMs,
+  parseRetryAfterMs,
+  readClaudeProbeState,
+  writeClaudeProbeState,
+} from './quota-fetcher-claude-probe-state';
 
 const logger = createLogger('cliproxy:quota:claude');
 
-export { buildClaudeQuotaWindows, buildClaudeCoreUsageSummary };
+export { buildClaudeQuotaWindows, buildClaudeCoreUsageSummary, buildClaudeGeneralWindowPresence };
 
 export const CLAUDE_OAUTH_USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 const CLAUDE_QUOTA_TIMEOUT_MS = 10000;
 const CLAUDE_QUOTA_MAX_ATTEMPTS = 2;
 const CLAUDE_OAUTH_BETA_HEADER = 'oauth-2025-04-20';
 const CLAUDE_QUOTA_ERROR_BODY_MAX_BYTES = 8192;
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    const error = new Error('Claude quota request cancelled');
+    error.name = 'AbortError';
+    throw error;
+  }
+}
+
+/** Bound caller waits even when a response-body implementation ignores fetch cancellation. */
+function waitWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener('abort', onAbort);
+      try {
+        throwIfAborted(signal);
+      } catch (error) {
+        reject(error);
+      }
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      }
+    );
+    if (signal.aborted) onAbort();
+  });
+}
 
 interface ClaudeAuthData {
   accessToken: string;
@@ -149,8 +192,18 @@ async function readAuthCandidate(filePath: string): Promise<ClaudeAuthData | nul
   };
 }
 
-async function readClaudeAuthData(accountId: string): Promise<ClaudeAuthData | null> {
+export async function readClaudeAuthData(accountId: string): Promise<ClaudeAuthData | null> {
   const authDirs = [getAuthDir(), getPausedDir()];
+  const registryAccount = getAccount('claude', accountId);
+  if (registryAccount?.tokenFile) {
+    for (const authDir of authDirs) {
+      const authData = await readAuthCandidate(path.join(authDir, registryAccount.tokenFile));
+      if (authData) {
+        return authData;
+      }
+    }
+  }
+
   const sanitizedId = sanitizeEmail(accountId);
   const expectedFiles = [`claude-${sanitizedId}.json`, `anthropic-${sanitizedId}.json`];
 
@@ -233,25 +286,33 @@ function buildEmptyResult(
 async function runClaudeUsageFetch(
   accessToken: string,
   accountId: string,
-  verbose: boolean
+  verbose: boolean,
+  signal?: AbortSignal
 ): Promise<ClaudeQuotaResult> {
   let lastError = 'Unknown error';
 
   for (let attempt = 1; attempt <= CLAUDE_QUOTA_MAX_ATTEMPTS; attempt++) {
+    throwIfAborted(signal);
     const controller = new AbortController();
+    const onAbort = () => controller.abort();
+    signal?.addEventListener('abort', onAbort, { once: true });
     const timeoutId = setTimeout(() => controller.abort(), CLAUDE_QUOTA_TIMEOUT_MS);
 
     try {
-      const response = await fetch(CLAUDE_OAUTH_USAGE_URL, {
-        method: 'GET',
-        signal: controller.signal,
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
-          'anthropic-beta': CLAUDE_OAUTH_BETA_HEADER,
-        },
-      });
+      const response = await waitWithAbort(
+        fetch(CLAUDE_OAUTH_USAGE_URL, {
+          method: 'GET',
+          signal: controller.signal,
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+            'anthropic-beta': CLAUDE_OAUTH_BETA_HEADER,
+          },
+        }),
+        controller.signal
+      );
+      throwIfAborted(signal);
 
       if (verbose) {
         logger.info('quota.fetch.status', `Claude OAuth usage status: ${response.status}`, {
@@ -262,8 +323,11 @@ async function runClaudeUsageFetch(
       }
 
       if (response.status === 401) {
-        const errorMessage = await readResponseErrorMessage(response);
-        clearTimeout(timeoutId);
+        const errorMessage = await waitWithAbort(
+          readResponseErrorMessage(response),
+          controller.signal
+        );
+        throwIfAborted(signal);
         return buildEmptyResult(
           errorMessage || 'Authentication required for Claude OAuth usage',
           accountId,
@@ -272,19 +336,18 @@ async function runClaudeUsageFetch(
       }
 
       if (response.status === 404) {
-        clearTimeout(timeoutId);
         return buildEmptyResult('Claude OAuth usage endpoint not found', accountId);
       }
 
       if (response.status === 403) {
-        clearTimeout(timeoutId);
         return buildEmptyResult('Not authorized for Claude OAuth usage', accountId);
       }
 
       if (!response.ok) {
         lastError =
-          (await readResponseErrorMessage(response)) ||
+          (await waitWithAbort(readResponseErrorMessage(response), controller.signal)) ||
           `Claude OAuth usage API error: ${response.status}`;
+        throwIfAborted(signal);
         // Surface the upstream status + Retry-After so an outer caller (the
         // native collector's circuit-breaker) can honor backoff guidance.
         const retryAfter = response.headers.get('retry-after');
@@ -292,10 +355,8 @@ async function runClaudeUsageFetch(
         // honor Retry-After and bound total volume. Inner retry stays for
         // transient 5xx only.
         if (attempt < CLAUDE_QUOTA_MAX_ATTEMPTS && response.status >= 500) {
-          clearTimeout(timeoutId);
           continue;
         }
-        clearTimeout(timeoutId);
         if (response.status === 429) {
           return {
             ...buildEmptyResult('Claude usage status temporarily unavailable', accountId),
@@ -317,21 +378,22 @@ async function runClaudeUsageFetch(
 
       let payload: unknown;
       try {
-        payload = await response.json();
+        payload = await waitWithAbort(response.json(), controller.signal);
       } catch {
-        clearTimeout(timeoutId);
+        throwIfAborted(signal);
         return buildEmptyResult('Invalid Claude OAuth usage format', accountId);
       }
+      throwIfAborted(signal);
 
       if (!toObject(payload)) {
-        clearTimeout(timeoutId);
         return buildEmptyResult('Invalid Claude OAuth usage format', accountId);
       }
 
       const windows = buildClaudeQuotaWindows(payload as Record<string, unknown>);
       const coreUsage = buildClaudeCoreUsageSummary(windows);
-
-      clearTimeout(timeoutId);
+      const generalWindowPresence = buildClaudeGeneralWindowPresence(
+        payload as Record<string, unknown>
+      );
 
       return {
         success: true,
@@ -339,12 +401,12 @@ async function runClaudeUsageFetch(
         coreUsage,
         credits: claudeCredits(payload as Record<string, unknown>),
         cloudCredits: claudeCloudCredits(payload as Record<string, unknown>),
-        plan: await fetchClaudePlan(accessToken, accountId),
+        generalWindowPresence,
         lastUpdated: Date.now(),
         accountId,
       };
     } catch (error) {
-      clearTimeout(timeoutId);
+      throwIfAborted(signal);
       lastError =
         error instanceof Error && error.name === 'AbortError'
           ? 'Claude OAuth usage request timeout'
@@ -368,9 +430,11 @@ async function runClaudeUsageFetch(
       }
 
       if (attempt >= CLAUDE_QUOTA_MAX_ATTEMPTS) {
-        clearTimeout(timeoutId);
         return { ...buildEmptyResult(lastError, accountId), retryable: true };
       }
+    } finally {
+      clearTimeout(timeoutId);
+      signal?.removeEventListener('abort', onAbort);
     }
   }
 
@@ -388,12 +452,14 @@ async function runClaudeUsageFetch(
 export async function fetchClaudeQuotaWithToken(
   accessToken: string,
   accountId = 'claude-code',
-  verbose = false
+  verbose = false,
+  signal?: AbortSignal
 ): Promise<ClaudeQuotaResult> {
+  throwIfAborted(signal);
   if (!accessToken || accessToken.trim().length === 0) {
     return buildEmptyResult('Missing native Claude access token', accountId, true);
   }
-  return runClaudeUsageFetch(accessToken.trim(), accountId, verbose);
+  return runClaudeUsageFetch(accessToken.trim(), accountId, verbose, signal);
 }
 
 /**
@@ -401,9 +467,12 @@ export async function fetchClaudeQuotaWithToken(
  */
 export async function fetchClaudeQuota(
   accountId: string,
-  verbose = false
+  verbose = false,
+  signal?: AbortSignal
 ): Promise<ClaudeQuotaResult> {
+  throwIfAborted(signal);
   const authData = await readClaudeAuthData(accountId);
+  throwIfAborted(signal);
   if (!authData) {
     return buildEmptyResult('Auth file not found for Claude account', accountId);
   }
@@ -416,7 +485,154 @@ export async function fetchClaudeQuota(
     );
   }
 
-  return runClaudeUsageFetch(authData.accessToken, accountId, verbose);
+  const pending = pendingClaudeFetches.get(accountId);
+  if (pending) return waitForSharedFetch(accountId, pending, signal);
+
+  const controller = new AbortController();
+  const entry: PendingClaudeFetch = {
+    controller,
+    waiters: 0,
+    settled: false,
+    promise: fetchClaudeQuotaWithSharedState(
+      authData.accessToken,
+      accountId,
+      verbose,
+      controller.signal
+    ).finally(() => {
+      entry.settled = true;
+      if (pendingClaudeFetches.get(accountId) === entry) pendingClaudeFetches.delete(accountId);
+    }),
+  };
+  pendingClaudeFetches.set(accountId, entry);
+  return waitForSharedFetch(accountId, entry, signal);
+}
+
+/** In-process coalescing; the on-disk probe state coordinates across processes. */
+interface PendingClaudeFetch {
+  promise: Promise<ClaudeQuotaResult>;
+  controller: AbortController;
+  waiters: number;
+  settled: boolean;
+}
+const pendingClaudeFetches = new Map<string, PendingClaudeFetch>();
+
+/** Only the last departing caller may cancel a shared provider request. */
+function waitForSharedFetch(
+  accountId: string,
+  entry: PendingClaudeFetch,
+  signal?: AbortSignal
+): Promise<ClaudeQuotaResult> {
+  entry.waiters++;
+  return new Promise<ClaudeQuotaResult>((resolve, reject) => {
+    let done = false;
+    const release = () => {
+      if (done) return false;
+      done = true;
+      signal?.removeEventListener('abort', onAbort);
+      entry.waiters--;
+      if (!entry.settled && entry.waiters === 0) {
+        if (pendingClaudeFetches.get(accountId) === entry) pendingClaudeFetches.delete(accountId);
+        entry.controller.abort();
+      }
+      return true;
+    };
+    const onAbort = () => {
+      if (!release()) return;
+      try {
+        throwIfAborted(signal);
+      } catch (error) {
+        reject(error);
+      }
+    };
+    entry.promise.then(
+      (value) => {
+        if (release()) resolve(value);
+      },
+      (error: unknown) => {
+        if (release()) reject(error);
+      }
+    );
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+  });
+}
+
+function buildCooldownHint(cooldownUntil: number): string {
+  return `Inference may still be available. Anthropic rate-limited the usage check; CCS retries after ${new Date(cooldownUntil).toLocaleTimeString()}.`;
+}
+
+/** Result for a probe skipped because the account is in a 429 cooldown. */
+function buildCooldownResult(accountId: string, cooldownUntil: number): ClaudeQuotaResult {
+  return {
+    ...buildEmptyResult('Claude usage status temporarily unavailable', accountId),
+    httpStatus: 429,
+    errorCode: 'usage_probe_unavailable',
+    actionHint: buildCooldownHint(cooldownUntil),
+    retryable: true,
+    errorDetail: `cooldown-until:${new Date(cooldownUntil).toISOString()}`,
+  };
+}
+
+/**
+ * Probe Anthropic through the shared on-disk state: reuse a fresh result from
+ * any CCS process, skip the network during a 429 cooldown, and serve the last
+ * good result (stale: true) while the probe is rate-limited or failing.
+ */
+async function fetchClaudeQuotaWithSharedState(
+  accessToken: string,
+  accountId: string,
+  verbose: boolean,
+  signal?: AbortSignal
+): Promise<ClaudeQuotaResult> {
+  throwIfAborted(signal);
+  const state = readClaudeProbeState(accountId);
+  const now = Date.now();
+
+  if (state.lastGood && now - state.lastGood.lastUpdated < CLAUDE_PROBE_SHARED_TTL_MS) {
+    return state.lastGood;
+  }
+
+  if (now < state.cooldownUntil) {
+    const stale = state.lastGood ? buildStaleClaudeResult(state.lastGood, now) : null;
+    return stale ?? buildCooldownResult(accountId, state.cooldownUntil);
+  }
+
+  const result = await runClaudeUsageFetch(accessToken, accountId, verbose, signal);
+  throwIfAborted(signal);
+
+  if (result.success) {
+    writeClaudeProbeState(accountId, {
+      ...state,
+      lastGood: result,
+      consecutive429: 0,
+      cooldownUntil: 0,
+    });
+    return result;
+  }
+
+  if (result.httpStatus === 429) {
+    const consecutive429 = state.consecutive429 + 1;
+    const cooldownMs = computeClaudeProbeCooldownMs(
+      consecutive429,
+      parseRetryAfterMs(result.errorDetail, Date.now())
+    );
+    const cooldownUntil = Date.now() + cooldownMs;
+    writeClaudeProbeState(accountId, { ...state, consecutive429, cooldownUntil });
+    logger.warn('quota.fetch.rate_limited', 'Claude OAuth usage probe rate-limited', {
+      provider: 'claude',
+      consecutive429,
+      cooldownMs,
+    });
+    const stale = state.lastGood ? buildStaleClaudeResult(state.lastGood, Date.now()) : null;
+    return stale ?? { ...result, actionHint: buildCooldownHint(cooldownUntil) };
+  }
+
+  // Transient failures (5xx, timeouts) keep the last good numbers visible;
+  // auth and access failures are shown as-is so the user can act on them.
+  if (result.retryable && state.lastGood) {
+    return buildStaleClaudeResult(state.lastGood, Date.now()) ?? result;
+  }
+  return result;
 }
 
 /**
@@ -433,34 +649,4 @@ export async function fetchAllClaudeQuotas(
     }))
   );
   return results;
-}
-
-const profileCache = new Map<
-  string,
-  { expires: number; value?: { organizationType?: string; rateLimitTier?: string } }
->();
-async function fetchClaudePlan(accessToken: string, accountId: string) {
-  const held = profileCache.get(accountId);
-  if (held && held.expires > Date.now()) return held.value;
-  let value: { organizationType?: string; rateLimitTier?: string } | undefined;
-  try {
-    const response = await fetch('https://api.anthropic.com/api/oauth/profile', {
-      headers: { Authorization: `Bearer ${accessToken}`, 'anthropic-beta': 'oauth-2025-04-20' },
-      signal: AbortSignal.timeout(5000),
-    });
-    if (response.ok) {
-      const root = toObject(await response.json());
-      const org = toObject(root?.organization);
-      if (org)
-        value = {
-          organizationType:
-            typeof org.organization_type === 'string' ? org.organization_type : undefined,
-          rateLimitTier: typeof org.rate_limit_tier === 'string' ? org.rate_limit_tier : undefined,
-        };
-    }
-  } catch {
-    /* Profile failure must not hide valid quotas. */
-  }
-  profileCache.set(accountId, { expires: Date.now() + 15 * 60_000, value });
-  return value;
 }
