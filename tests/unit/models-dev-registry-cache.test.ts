@@ -121,6 +121,27 @@ describe('models.dev registry cache', () => {
     expect(getCachedModelsDevRegistry({ allowStale: true })).toBeNull();
   });
 
+  it('parses the cache file once and re-reads it only when it changes', () => {
+    setCachedModelsDevRegistry(
+      { openai: { id: 'openai', models: { a: { id: 'a' } } } } as never,
+      Date.now()
+    );
+
+    const first = getCachedModelsDevRegistry({ allowStale: true });
+    expect(first).not.toBeNull();
+    for (let i = 0; i < 20; i++) {
+      expect(getCachedModelsDevRegistry({ allowStale: true })).toBe(first);
+    }
+
+    setCachedModelsDevRegistry(
+      { openai: { id: 'openai', models: { a: { id: 'a' }, bb: { id: 'bb' } } } } as never,
+      Date.now()
+    );
+    const updated = getCachedModelsDevRegistry({ allowStale: true });
+    expect(updated).not.toBe(first);
+    expect(updated?.openai.models?.bb).toBeDefined();
+  });
+
   it('starts and coalesces background refreshes without requiring callers to await', async () => {
     let fetchCalls = 0;
     let resolveResponse: (response: Response) => void = () => undefined;

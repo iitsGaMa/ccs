@@ -12,6 +12,45 @@ const LIVE_FETCH_TIMEOUT_MS = 3000;
 
 let pendingBackgroundRefresh: Promise<ModelsDevRegistry | null> | null = null;
 
+// Usage sync prices every request detail; re-parsing the multi-MB cache file per
+// call blocks the event loop for minutes. Memoize the parsed file by path + mtime + size.
+interface ParsedCacheMemo {
+  filePath: string;
+  mtimeMs: number;
+  size: number;
+  cache: ModelsDevCacheData | null;
+}
+
+let parsedCacheMemo: ParsedCacheMemo | null = null;
+
+function readCacheFile(filePath: string): ModelsDevCacheData | null {
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(filePath);
+  } catch {
+    parsedCacheMemo = null;
+    return null;
+  }
+
+  if (
+    parsedCacheMemo &&
+    parsedCacheMemo.filePath === filePath &&
+    parsedCacheMemo.mtimeMs === stat.mtimeMs &&
+    parsedCacheMemo.size === stat.size
+  ) {
+    return parsedCacheMemo.cache;
+  }
+
+  let cache: ModelsDevCacheData | null = null;
+  try {
+    cache = normalizeCachePayload(JSON.parse(fs.readFileSync(filePath, 'utf8')));
+  } catch {
+    cache = null;
+  }
+  parsedCacheMemo = { filePath, mtimeMs: stat.mtimeMs, size: stat.size, cache };
+  return cache;
+}
+
 export interface RegistryCacheReadOptions {
   allowStale?: boolean;
   now?: number;
@@ -74,10 +113,7 @@ export function getCachedModelsDevRegistry(
   options: RegistryCacheReadOptions = {}
 ): ModelsDevRegistry | null {
   try {
-    const filePath = getCacheFilePath();
-    if (!fs.existsSync(filePath)) return null;
-
-    const cache = normalizeCachePayload(JSON.parse(fs.readFileSync(filePath, 'utf8')));
+    const cache = readCacheFile(getCacheFilePath());
     if (!cache) return null;
 
     const now = options.now ?? Date.now();
@@ -96,6 +132,7 @@ export function setCachedModelsDevRegistry(
     const filePath = getCacheFilePath();
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     const cache: ModelsDevCacheData = { version: 1, fetchedAt, providers };
+    parsedCacheMemo = null;
     fs.writeFileSync(filePath, JSON.stringify(cache));
   } catch {
     // Best-effort cache writes must not break analytics.
@@ -103,6 +140,7 @@ export function setCachedModelsDevRegistry(
 }
 
 export function clearModelsDevRegistryCache(): boolean {
+  parsedCacheMemo = null;
   try {
     const filePath = getCacheFilePath();
     if (!fs.existsSync(filePath)) return false;
