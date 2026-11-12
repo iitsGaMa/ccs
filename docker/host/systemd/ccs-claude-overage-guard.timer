@@ -1,0 +1,10 @@
+[Unit]
+Description=Check the Dotsafe Claude account quota every 30 seconds
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=30s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

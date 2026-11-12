@@ -1,0 +1,17 @@
+[Unit]
+Description=Pause the Dotsafe Claude account in CLIProxy before it spends extra-usage credits
+After=docker.service
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+StateDirectory=ccs-claude-overage-guard
+StateDirectoryMode=0700
+Environment=GUARD_EMAIL=aymeric.deloche@dotsafe.fr
+Environment=GUARD_THRESHOLD=0.95
+Environment=GUARD_CCS_HOME=/var/lib/docker/volumes/ccs_animou_home/_data
+Environment=GUARD_MGMT_URL=http://100.95.152.41:8317/v0/management
+Environment=GUARD_STATE=/var/lib/ccs-claude-overage-guard/state.json
+ExecStart=/usr/bin/python3 /opt/cliproxy/claude-overage-guard.py
+TimeoutStartSec=60
