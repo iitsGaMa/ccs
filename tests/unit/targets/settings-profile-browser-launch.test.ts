@@ -203,7 +203,20 @@ exit 0
       return;
     }
 
-    await stopOpenAICompatProxy();
+    // Child ccs runs use CCS_HOME=tmpHome, so the proxy state lives there.
+    // Stop it under the same home; otherwise the daemon is orphaned and the
+    // real ~/.ccs proxies are targeted instead.
+    const originalCcsHome = process.env.CCS_HOME;
+    const originalCcsDir = process.env.CCS_DIR;
+    process.env.CCS_HOME = tmpHome;
+    delete process.env.CCS_DIR;
+    try {
+      await stopOpenAICompatProxy();
+    } finally {
+      if (originalCcsHome === undefined) delete process.env.CCS_HOME;
+      else process.env.CCS_HOME = originalCcsHome;
+      if (originalCcsDir !== undefined) process.env.CCS_DIR = originalCcsDir;
+    }
     fs.rmSync(tmpHome, { recursive: true, force: true });
   });
 
